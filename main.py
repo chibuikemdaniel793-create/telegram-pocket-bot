@@ -1,5 +1,3 @@
-import nest_asyncio
-nest_asyncio.apply()
 
 import asyncio
 from datetime import datetime,timedelta
@@ -321,6 +319,6 @@ async def main():
 
     print("Bot Running")
 
-    await app.run_polling()
+    app.run_polling()
 
 asyncio.run(main())
