@@ -3,7 +3,7 @@ nest_asyncio.apply()
 
 import asyncio
 from datetime import datetime,timedelta
-from api_pocket import AsyncPocketOptionClient
+from pocketoptionapi_async import AsyncPocketOptionClient
 from telegram import Update,Bot,ReplyKeyboardMarkup
 from telegram.ext import Application,ContextTypes,MessageHandler,filters
 
