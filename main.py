@@ -452,10 +452,8 @@ async def trading_loop():
     await send_message(
         "✅ PocketOption AI Bot Connected"
     )
-                                                      while True:
-
-        try:                                      
-            if not BOT_RUNNING:
+  while True:                                   
+     if not BOT_RUNNING:
 
                 await asyncio.sleep(5)
 
