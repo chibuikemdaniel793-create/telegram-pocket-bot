@@ -4,7 +4,7 @@ from datetime import datetime,timedelta
 from pocketoptionapi_async import AsyncPocketOptionClient
 from telegram import Update,Bot,ReplyKeyboardMarkup
 from telegram.ext import Application,ContextTypes,MessageHandler,filters
-TELEGRAM_Token"8636133899:AAH2M4Onguq-3Gx2yInJ-EYvYoYOu5fmKy4"
+TELEGRAM_TOKEN = "8636133899:AAH2M4Onguq-3Gx2yInJ-EYvYoYOu5fmKy4"
 SSID="%22%3Bs%3A32%3A%227b2905945d5265888be620a3a83ced5%22%3Bs%3A10%3A%22"
 
 TIMEFRAME=60
