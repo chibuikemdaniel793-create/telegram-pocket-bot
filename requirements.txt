@@ -1,3 +1,2 @@
 python-telegram-bot==20.7
-nest-asyncio
-pocketoptionapi-async
+pocketoptionapi_async
