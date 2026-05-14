@@ -20,8 +20,8 @@ from telegram.ext import (
 # CONFIG
 # =========================
 
-TELEGRAM_TOKEN = os.getenv("8729302934:AAGTTdfV8lPAR2hg4_zVVqT2ipLG1-lAV4s")
-SSID = os.getenv("%22%3Bs%3A32%3A%227b2905945d5265888be620a3a83ced5%22%3Bs%3A10%3A%22")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+SSID = os.getenv("SSID")
 
 TIMEFRAME = 60
 ACCOUNT_MODE = "DEMO"
@@ -236,7 +236,7 @@ async def trading_loop():
         await send_message("✅ PocketOption Connected")
 
     except Exception as e:
-        print(e) 
+        print(e)
 
     while True:
 
