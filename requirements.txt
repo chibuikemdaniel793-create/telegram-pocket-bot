@@ -1,6 +1,3 @@
 python-telegram-bot==20.7
-pocketoptionapi_async
-aiohttp
-websockets
-python-dotenv
 nest_asyncio
+pocketoptionapi_async
