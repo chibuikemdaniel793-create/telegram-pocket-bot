@@ -37,9 +37,8 @@ current_amount = INITIAL_AMOUNT
 TARGET_PROFIT = 1000
 cycle_profit = 0
 
-last_trade_time = None
+last_trade_minute = None
 
-# tracking
 wins = 0
 losses = 0
 total_trades = 0
@@ -74,80 +73,7 @@ def create_client():
 
 async def send(msg):
     if AUTHORIZED_CHAT_ID:
-        await bot.send_message(AUTHORIZED_CHAT_ID, msg, reply_markup=reply_markup)
-
-async def wait_new_candle():
-    while True:
-        now = datetime.now()
-        if now.second == 0:
-            return
-        await asyncio.sleep(0.3)
-
-# =========================
-# BALANCE
-# =========================
-
-async def get_balance():
-    try:
-        bal = await client.get_balance()
-        return bal
-    except:
-        return "Error"
-
-# =========================
-# SIGNAL (SIMPLE REAL FILTER)
-# =========================
-
-async def get_signal(pair):
-    try:
-        candles = await client.get_candles(pair, TIMEFRAME, 0)
-        closes = [float(c["close"]) for c in candles]
-
-        if len(closes) < 10:
-            return "WAIT"
-
-        if closes[-1] > closes[-2]:
-            return "BUY"
-        else:
-            return "SELL"
-
-    except:
-        return "WAIT"
-
-# =========================
-# MARTINGALE (SMART RECOVERY)
-# =========================
-
-def calculate_next_amount(loss_amount, payout=0.9):
-    # recover loss + profit target
-    return round((loss_amount / payout) + INITIAL_AMOUNT, 2)
-
-# =========================
-# TRADE
-# =========================
-
-async def trade(pair, signal):
-    global current_amount, wins, losses, total_trades, cycle_profit
-
-    while True:
         try:
-            await send(f"📊 {pair} → {signal} | ${current_amount}")
-
-            trade = await client.buy(
-                asset=pair,
-                amount=current_amount,
-                action=signal.lower(),
-                duration=EXPIRY
-            )
-
-            await asyncio.sleep(EXPIRY + 3)
-
-            result = await client.check_win(trade)
-
-            total_trades += 1
-
-            if result > 0:
-                wins += 1
-                cycle_profit += result
-
-                await send(f"✅ WIN ${result} | Total ${
+            await bot.send_message(AUTHORIZED_CHAT_ID, msg, reply_markup=reply_markup)
+        except Exception as e:
+            print("Send error:",
