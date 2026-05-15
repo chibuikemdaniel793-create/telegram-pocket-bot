@@ -3,3 +3,4 @@ pocketoptionapi_async
 aiohttp
 websockets
 python-dotenv
+nest_asyncio
