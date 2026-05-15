@@ -2,16 +2,13 @@ import os
 import asyncio
 import nest_asyncio
 import traceback
-
 from datetime import datetime
-from pocketoptionapi_async import AsyncPocketOptionClient
 
+from pocketoptionapi_async import AsyncPocketOptionClient
 from telegram import Update, Bot, ReplyKeyboardMarkup
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
-# =========================
-# CONFIG
-# =========================
+# ================= CONFIG =================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 SSID = os.getenv("SSID")
@@ -23,44 +20,29 @@ if not TELEGRAM_TOKEN:
 if not SSID:
     raise ValueError("SSID missing")
 
-TIMEFRAME = 60
 EXPIRY = 60
 
-ACCOUNT_MODE = "DEMO"
-
 AUTO_TRADE = False
-AUTO_PAUSED = False
-
-INITIAL_AMOUNT = 11
-current_amount = INITIAL_AMOUNT
-MAX_AMOUNT = 500
-
-MIN_CONFIDENCE = 85
-
 BOT_RUNNING = True
 AUTHORIZED_CHAT_ID = None
 
-# 📊 Tracking
+INITIAL_AMOUNT = 11
+current_amount = INITIAL_AMOUNT
+
+cycle_profit = 0
+
 wins = 0
 losses = 0
 total_trades = 0
 
-# 💰 Profit cycle
-TARGET_PROFIT = 50
-cycle_profit = 0
+client = None
 
-# 🔄 SSID state
-SSID_INVALID = False
-
-# =========================
-# TELEGRAM
-# =========================
+# ================= TELEGRAM =================
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
 keyboard = [
     ["🤖 AUTO", "📢 MANUAL"],
-    ["🎮 DEMO", "💵 REAL"],
     ["💰 BALANCE", "📊 STATUS"],
     ["▶ START", "⛔ STOP"],
     ["🔄 RECONNECT"]
@@ -68,116 +50,12 @@ keyboard = [
 
 reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# =========================
-# PAIRS
-# =========================
-
-PAIRS = [
-    "EURUSD_otc","GBPUSD_otc","USDJPY_otc","AUDUSD_otc",
-    "USDCAD_otc","USDCHF_otc","EURJPY_otc","GBPJPY_otc"
-]
-
-# =========================
-# CLIENT
-# =========================
-
-client = None
+# ================= CLIENT =================
 
 def create_client():
-    return AsyncPocketOptionClient(
-        ssid=SSID,
-        is_demo=(ACCOUNT_MODE == "DEMO")
-    )
+    return AsyncPocketOptionClient(ssid=SSID, is_demo=True)
 
-# =========================
-# INDICATORS
-# =========================
-
-def ema(prices, period):
-    e = prices[0]
-    m = 2 / (period + 1)
-    for p in prices[1:]:
-        e = ((p - e) * m) + e
-    return e
-
-def rsi(prices, period=14):
-    gains, losses = [], []
-    for i in range(1, len(prices)):
-        d = prices[i] - prices[i-1]
-        if d > 0:
-            gains.append(d)
-        else:
-            losses.append(abs(d))
-
-    if not losses:
-        return 100
-
-    ag = sum(gains[-period:]) / period
-    al = sum(losses[-period:]) / period
-
-    if al == 0:
-        return 100
-
-    rs = ag / al
-    return 100 - (100 / (1 + rs))
-
-def macd(prices):
-    return ema(prices, 12) - ema(prices, 26)
-
-def bollinger_bands(prices, period=20, deviation=2):
-    if len(prices) < period:
-        return None, None, None
-
-    sma = sum(prices[-period:]) / period
-    variance = sum((p - sma) ** 2 for p in prices[-period:]) / period
-    std_dev = variance ** 0.5
-
-    upper = sma + (deviation * std_dev)
-    lower = sma - (deviation * std_dev)
-
-    return upper, sma, lower
-
-def analyze_market(candles):
-    if not candles:
-        return "WAIT", 0
-
-    closes = [float(c["close"]) for c in candles]
-
-    if len(closes) < 30:
-        return "WAIT", 50
-
-    ema_fast = ema(closes[-20:], 9)
-    ema_slow = ema(closes[-30:], 21)
-
-    r = rsi(closes)
-    m = macd(closes)
-
-    upper, middle, lower = bollinger_bands(closes)
-    current_price = closes[-1]
-
-    if (
-        ema_fast > ema_slow and
-        m > 0 and
-        r < 70 and
-        lower is not None and
-        current_price <= lower
-    ):
-        return "BUY", 90
-
-    if (
-        ema_fast < ema_slow and
-        m < 0 and
-        r > 30 and
-        upper is not None and
-        current_price >= upper
-    ):
-        return "SELL", 90
-
-    return "WAIT", 50
-
-# =========================
-# UTIL
-# =========================
+# ================= UTIL =================
 
 async def wait_for_new_candle():
     while True:
@@ -186,113 +64,98 @@ async def wait_for_new_candle():
         await asyncio.sleep(0.5)
 
 async def send_message(msg):
-    if not AUTHORIZED_CHAT_ID:
-        return
-    try:
-        await bot.send_message(AUTHORIZED_CHAT_ID, msg, reply_markup=reply_markup)
-    except Exception as e:
-        print(e)
+    if AUTHORIZED_CHAT_ID:
+        try:
+            await bot.send_message(AUTHORIZED_CHAT_ID, msg)
+        except:
+            pass
 
-# =========================
-# TRADE
-# =========================
+# ================= SMART MARTINGALE =================
+
+def calculate_next_amount(loss_total, base_amount, payout):
+    # avoid division issues
+    if payout <= 0:
+        payout = 0.80
+
+    needed = abs(loss_total) + base_amount
+    return round(needed / payout, 2)
+
+# ================= TRADE =================
 
 async def place_trade(pair, signal):
-    global current_amount, wins, losses, total_trades
-    global cycle_profit, AUTO_PAUSED, SSID_INVALID, client
+    global current_amount, wins, losses, total_trades, cycle_profit
 
     while True:
         try:
-            await send_message(f"🤖 {pair} → {signal} | ${current_amount}")
+            await send_message(f"{pair} → {signal} | ${current_amount}")
+
+            # 🔥 get payout dynamically
+            try:
+                payout_info = await client.get_payout(pair)
+                payout = payout_info / 100 if payout_info > 1 else payout_info
+            except:
+                payout = 0.92  # fallback
 
             trade = await client.buy(
                 asset=pair,
                 amount=current_amount,
-                action=signal.lower(),
+                action=signal,
                 duration=EXPIRY
             )
 
-            await asyncio.sleep(EXPIRY + 5)
+            await asyncio.sleep(EXPIRY + 2)
 
-            try:
-                result = await client.check_win(trade)
-            except:
-                result = 0
+            result = await client.check_win(trade)
+
+            total_trades += 1
 
             if result > 0:
                 wins += 1
-                total_trades += 1
                 cycle_profit += result
+
+                await send_message(f"WIN ${result}")
+
+                # reset after win
                 current_amount = INITIAL_AMOUNT
+                cycle_profit = 0
 
-                await send_message(f"✅ WIN ${result}\n💰 ${cycle_profit:.2f}/{TARGET_PROFIT}")
-
-                if cycle_profit >= TARGET_PROFIT:
-                    AUTO_PAUSED = True
-                    await send_message("🎯 Target reached. Auto paused.")
-                    return
-
+                await send_message("Cycle complete. Restarting fresh.")
                 break
 
             else:
                 losses += 1
-                total_trades += 1
                 cycle_profit -= current_amount
 
-                await send_message("❌ LOSS")
+                # 🔥 SMART MARTINGALE
+                next_amount = calculate_next_amount(
+                    cycle_profit,
+                    INITIAL_AMOUNT,
+                    payout
+                )
 
-                current_amount *= 2
+                await send_message(
+                    f"LOSS → next ${next_amount} (payout {round(payout*100)}%)"
+                )
 
-                if current_amount > MAX_AMOUNT:
-                    await send_message("⚠️ Max reached. Reset.")
-                    current_amount = INITIAL_AMOUNT
-                    break
+                current_amount = next_amount
 
                 await wait_for_new_candle()
 
         except Exception as e:
             traceback.print_exc()
+            await asyncio.sleep(3)
 
-            if "connect" in str(e).lower() or "session" in str(e).lower():
-                SSID_INVALID = True
-                client = None
-
-                await send_message(
-                    "❌ Connection lost.\n⚠️ SSID expired.\nUpdate & press RECONNECT."
-                )
-                return
-
-            await asyncio.sleep(5)
-
-# =========================
-# LOOP
-# =========================
+# ================= LOOP =================
 
 async def trading_loop():
-    global client, SSID_INVALID
+    global client
 
     while True:
         try:
             if client is None:
                 client = create_client()
-                try:
-                    await client.connect()
-                    SSID_INVALID = False
-                    await send_message("✅ Connected")
-                except Exception as e:
-                    client = None
-                    SSID_INVALID = True
-
-                    await send_message(
-                        "❌ Connection failed.\n⚠️ SSID may be expired."
-                    )
-
-                    await asyncio.sleep(15)
-                    continue
-
-            if SSID_INVALID:
-                await asyncio.sleep(10)
-                continue
+                await client.connect()
+                await send_message("Connected")
 
             if not BOT_RUNNING:
                 await asyncio.sleep(5)
@@ -300,41 +163,36 @@ async def trading_loop():
 
             await wait_for_new_candle()
 
-            for pair in PAIRS:
-                try:
-                    candles = await client.get_candles(pair, TIMEFRAME, 0)
-                    signal, conf = analyze_market(candles)
-
-                    if signal != "WAIT" and conf >= MIN_CONFIDENCE:
-                        if AUTO_TRADE and not AUTO_PAUSED:
-                            await place_trade(pair, signal)
-                        else:
-                            await send_message(f"📢 {pair} → {signal}")
-
-                    await asyncio.sleep(1)
-
-                except:
-                    traceback.print_exc()
+            if AUTO_TRADE:
+                await place_trade("EURUSD_otc", "buy")
 
         except:
             traceback.print_exc()
             await asyncio.sleep(5)
 
-# =========================
-# BUTTONS
-# =========================
+# ================= BUTTONS =================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global AUTO_TRADE, BOT_RUNNING, AUTHORIZED_CHAT_ID
-    global current_amount, cycle_profit, AUTO_PAUSED
-    global client, SSID_INVALID, wins, losses, total_trades
+    global current_amount, INITIAL_AMOUNT
 
     if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("❌ Unauthorized")
+        await update.message.reply_text("Unauthorized")
         return
 
     AUTHORIZED_CHAT_ID = update.effective_chat.id
     text = update.message.text
+
+    # 💰 manual amount
+    if text.startswith("SET"):
+        try:
+            amount = float(text.split()[1])
+            current_amount = amount
+            INITIAL_AMOUNT = amount
+            await update.message.reply_text(f"Amount set to ${amount}")
+        except:
+            await update.message.reply_text("Use: SET 10")
+        return
 
     if text == "🤖 AUTO":
         AUTO_TRADE = True
@@ -344,41 +202,32 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif text == "▶ START":
         BOT_RUNNING = True
-        AUTO_PAUSED = False
-        cycle_profit = 0
 
     elif text == "⛔ STOP":
         BOT_RUNNING = False
-        AUTO_TRADE = False
-        current_amount = INITIAL_AMOUNT
 
-    elif text == "🔄 RECONNECT":
-        client = None
-        SSID_INVALID = False
-        await update.message.reply_text("🔄 Reconnecting...")
+    elif text == "💰 BALANCE":
+        try:
+            temp_client = create_client()
+            await temp_client.connect()
+
+            balance = await temp_client.get_balance()
+
+            await update.message.reply_text(f"Balance: ${balance}")
+
+            await temp_client.close()
+        except:
+            await update.message.reply_text("Balance error")
 
     elif text == "📊 STATUS":
-        winrate = (wins / total_trades * 100) if total_trades else 0
-        state = "PAUSED" if AUTO_PAUSED else "RUNNING"
-
         await update.message.reply_text(
-            f"📊 STATUS\n\n"
-            f"STATE: {state}\n"
-            f"MODE: {'AUTO' if AUTO_TRADE else 'MANUAL'}\n\n"
-            f"Trades: {total_trades}\n"
-            f"Wins: {wins}\n"
-            f"Losses: {losses}\n"
-            f"WR: {winrate:.1f}%\n\n"
-            f"💰 Profit: ${cycle_profit:.2f}/{TARGET_PROFIT}",
-            reply_markup=reply_markup
+            f"Trades: {total_trades}\nWins: {wins}\nLosses: {losses}"
         )
         return
 
-    await update.message.reply_text("✅ Updated", reply_markup=reply_markup)
+    await update.message.reply_text("Updated", reply_markup=reply_markup)
 
-# =========================
-# MAIN
-# =========================
+# ================= MAIN =================
 
 async def start_background(app):
     asyncio.create_task(trading_loop())
