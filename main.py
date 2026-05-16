@@ -6,32 +6,35 @@ from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, fil
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# --------- ANALYSIS (SAFE + STABLE) ----------
+# --------- ANALYSIS ----------
 def analyze_chart(path):
     img = cv2.imread(path)
 
-    # Safety check
+    # Safety: if image fails
     if img is None:
         return "SELL"
 
     try:
-        # Resize for speed and stability
+        # Resize for speed and consistency
         img = cv2.resize(img, (400, 250))
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
         h, w = gray.shape
 
         prices = []
 
-        # Extract price path from image
+        # Extract approximate price path
         for x in range(0, w, 10):
             column = gray[:, x]
+
             if column.size == 0:
                 continue
 
+            # Find brightest point (approx price)
             y = int(np.argmax(column))
             prices.append(y)
 
-        # Need at least 5 points (4 movements)
+        # Need at least 5 points → 4 movements
         if len(prices) < 5:
             return "SELL"
 
@@ -40,7 +43,7 @@ def analyze_chart(path):
         buyers_force = 0
         sellers_force = 0
 
-        # Measure movement strength (control)
+        # Compare movements (this is your "control")
         for i in range(1, len(last)):
             move = last[i-1] - last[i]
 
@@ -59,7 +62,7 @@ def analyze_chart(path):
         return "SELL"
 
 
-# --------- TELEGRAM HANDLERS ----------
+# --------- TELEGRAM ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Send screenshot")
 
