@@ -1,144 +1,83 @@
 import os
-import numpy as np
-import cv2
+import logging
+from io import BytesIO
+
 from telegram import Update
 from telegram.ext import Application, MessageHandler, ContextTypes, filters
 
+from PIL import Image
+import numpy as np
+
 # ================= CONFIG =================
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-if not TOKEN:
+if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN missing")
 
-# ================= IMAGE ANALYSIS =================
+# ================= LOGGING =================
 
-def calculate_rsi(prices, period=14):
-    prices = np.array(prices)
-    delta = np.diff(prices)
+logging.basicConfig(level=logging.INFO)
 
-    gain = np.maximum(delta, 0)
-    loss = -np.minimum(delta, 0)
+# ================= AI LOGIC =================
 
-    avg_gain = np.mean(gain[-period:])
-    avg_loss = np.mean(loss[-period:])
+def analyze_chart(image: Image.Image) -> str:
+    """
+    Simple AI logic using brightness trend as placeholder.
+    You can upgrade this later.
+    """
 
-    if avg_loss == 0:
-        return 100
+    img = image.convert("L")  # grayscale
+    arr = np.array(img)
 
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    # Split into 5 vertical parts (simulate 5 candles)
+    h, w = arr.shape
+    section = w // 5
 
-
-def analyze_chart(image_path):
-    img = cv2.imread(image_path)
-
-    if img is None:
-        return None
-
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    # detect edges (rough candle detection)
-    edges = cv2.Canny(gray, 50, 150)
-
-    # simulate candle extraction from brightness (simple approach)
-    height, width = gray.shape
-
-    # divide into 5 vertical zones (5 candles)
-    step = width // 5
-    closes = []
-
+    values = []
     for i in range(5):
-        region = gray[:, i * step:(i + 1) * step]
-        closes.append(np.mean(region))
+        part = arr[:, i * section:(i + 1) * section]
+        values.append(np.mean(part))
 
-    closes = np.array(closes)
+    # Use first 4 candles to predict 5th
+    trend = values[3] - values[0]
 
-    # ================= INDICATORS =================
-
-    # EMA 50 (approx using simple average due to limited data)
-    ema = np.mean(closes)
-
-    # RSI
-    rsi = calculate_rsi(closes)
-
-    # Bollinger Bands
-    mean = np.mean(closes)
-    std = np.std(closes)
-    upper = mean + 2 * std
-    lower = mean - 2 * std
-
-    last = closes[-1]
-
-    # ================= LOGIC =================
-
-    buyers = 0
-    sellers = 0
-
-    # last 4 candles trend
-    for i in range(1, 5):
-        if closes[i] > closes[i - 1]:
-            buyers += 1
-        else:
-            sellers += 1
-
-    # RSI logic
-    if rsi > 50:
-        buyers += 1
-    else:
-        sellers += 1
-
-    # EMA logic
-    if last > ema:
-        buyers += 1
-    else:
-        sellers += 1
-
-    # Bollinger logic
-    if last < lower:
-        buyers += 1
-    elif last > upper:
-        sellers += 1
-
-    # ================= FINAL SIGNAL =================
-
-    if buyers > sellers:
+    if trend > 0:
         return "BUY"
     else:
         return "SELL"
 
+# ================= HANDLER =================
 
-# ================= TELEGRAM HANDLER =================
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        photo = update.message.photo[-1]
+        file = await photo.get_file()
 
-async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
-        return
+        bio = BytesIO()
+        await file.download_to_memory(out=bio)
+        bio.seek(0)
 
-    photo = update.message.photo[-1]
-    file = await photo.get_file()
+        image = Image.open(bio)
 
-    path = "chart.jpg"
-    await file.download_to_drive(path)
+        result = analyze_chart(image)
 
-    result = analyze_chart(path)
-
-    if result:
         await update.message.reply_text(result)
-    else:
-        await update.message.reply_text("Error")
 
+    except Exception as e:
+        logging.error(e)
+        await update.message.reply_text("Error processing image")
 
 # ================= MAIN =================
 
 def main():
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    app.add_handler(MessageHandler(filters.PHOTO, handle_image))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    print("AI Bot Running...")
+    print("AI Screenshot Bot Running...")
+
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
