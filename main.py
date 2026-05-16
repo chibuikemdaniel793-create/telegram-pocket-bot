@@ -30,7 +30,7 @@ AUTHORIZED_CHAT_ID = None
 
 # martingale
 total_loss = 0
-last_payout = 0.80  # fallback
+last_payout = 0.80
 
 # stats
 wins = 0
@@ -61,16 +61,24 @@ def create_client():
         is_demo=(ACCOUNT_MODE == "DEMO")
     )
 
+async def connect_now():
+    global client
+    try:
+        client = create_client()
+        await client.connect()
+        return True
+    except Exception as e:
+        print("Reconnect error:", e)
+        client = None
+        return False
+
 async def ensure_connection():
     global client
     try:
         if client is None:
-            client = create_client()
-            await client.connect()
+            return await connect_now()
         return True
-    except Exception as e:
-        print("Connection error:", e)
-        client = None
+    except:
         return False
 
 # ================= UTIL =================
@@ -129,32 +137,28 @@ async def execute_trade(context, pair):
         total_trades += 1
 
         if result > 0:
-            # WIN
             wins += 1
             profit += result
 
             payout_ratio = result / current_amount
             last_payout = payout_ratio
 
-            await send(context, f"✅ WIN ${round(result,2)} ({round(payout_ratio*100,1)}%)")
+            await send(context, f"✅ WIN ${round(result,2)}")
 
-            # RESET martingale
             total_loss = 0
             current_amount = TRADE_AMOUNT
 
         else:
-            # LOSS
             losses += 1
             profit -= current_amount
             total_loss += current_amount
 
             payout_ratio = last_payout if last_payout > 0 else 0.80
-
             current_amount = (total_loss + TRADE_AMOUNT) / payout_ratio
 
             await send(
                 context,
-                f"❌ LOSS\nLoss: ${round(total_loss,2)}\nNext: ${round(current_amount,2)}"
+                f"❌ LOSS\nNext: ${round(current_amount,2)}"
             )
 
     except Exception:
@@ -164,8 +168,6 @@ async def execute_trade(context, pair):
 # ================= AUTO LOOP =================
 
 async def trading_loop(app):
-    global BOT_RUNNING
-
     while True:
         await asyncio.sleep(1)
 
@@ -196,7 +198,7 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "💲 AMOUNT":
         waiting_amount = True
-        await update.message.reply_text("Enter amount (e.g. 50)")
+        await update.message.reply_text("Enter amount")
         return
 
     if waiting_amount:
@@ -209,7 +211,26 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Invalid amount")
         return
 
-    if text == "🤖 AUTO":
+    if text == "🔄 RECONNECT":
+        await update.message.reply_text("Reconnecting...")
+        success = await connect_now()
+
+        if success:
+            await update.message.reply_text("✅ Connected successfully")
+        else:
+            await update.message.reply_text("❌ Reconnect failed (check SSID)")
+
+    elif text == "💰 BALANCE":
+        if not await ensure_connection():
+            await update.message.reply_text("❌ Not connected")
+            return
+        try:
+            bal = await client.get_balance()
+            await update.message.reply_text(f"Balance: ${bal}")
+        except:
+            await update.message.reply_text("❌ Balance error")
+
+    elif text == "🤖 AUTO":
         AUTO_TRADE = True
         manual_mode = False
         await update.message.reply_text("Auto ON")
@@ -219,16 +240,6 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         manual_mode = True
         await update.message.reply_text("Send pair (e.g. EURUSD_otc)")
 
-    elif text == "🎮 DEMO":
-        ACCOUNT_MODE = "DEMO"
-        client = None
-        await update.message.reply_text("Demo mode")
-
-    elif text == "💵 REAL":
-        ACCOUNT_MODE = "REAL"
-        client = None
-        await update.message.reply_text("Real mode")
-
     elif text == "▶ START":
         BOT_RUNNING = True
         await update.message.reply_text("Bot started")
@@ -236,20 +247,6 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "⛔ STOP":
         BOT_RUNNING = False
         await update.message.reply_text("Bot stopped")
-
-    elif text == "🔄 RECONNECT":
-        client = None
-        await update.message.reply_text("Reconnecting...")
-
-    elif text == "💰 BALANCE":
-        if not await ensure_connection():
-            await update.message.reply_text("Not connected")
-            return
-        try:
-            bal = await client.get_balance()
-            await update.message.reply_text(f"Balance: ${bal}")
-        except:
-            await update.message.reply_text("Balance error")
 
     elif text == "📊 STATUS":
         await update.message.reply_text(
