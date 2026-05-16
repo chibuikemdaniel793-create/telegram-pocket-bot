@@ -3,7 +3,13 @@ import logging
 from io import BytesIO
 
 from telegram import Update
-from telegram.ext import Application, MessageHandler, ContextTypes, filters
+from telegram.ext import (
+    Application,
+    MessageHandler,
+    CommandHandler,
+    ContextTypes,
+    filters
+)
 
 from PIL import Image
 import numpy as np
@@ -22,15 +28,9 @@ logging.basicConfig(level=logging.INFO)
 # ================= AI LOGIC =================
 
 def analyze_chart(image: Image.Image) -> str:
-    """
-    Simple AI logic using brightness trend as placeholder.
-    You can upgrade this later.
-    """
-
-    img = image.convert("L")  # grayscale
+    img = image.convert("L")
     arr = np.array(img)
 
-    # Split into 5 vertical parts (simulate 5 candles)
     h, w = arr.shape
     section = w // 5
 
@@ -39,7 +39,6 @@ def analyze_chart(image: Image.Image) -> str:
         part = arr[:, i * section:(i + 1) * section]
         values.append(np.mean(part))
 
-    # Use first 4 candles to predict 5th
     trend = values[3] - values[0]
 
     if trend > 0:
@@ -47,7 +46,13 @@ def analyze_chart(image: Image.Image) -> str:
     else:
         return "SELL"
 
-# ================= HANDLER =================
+# ================= HANDLERS =================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Send chart screenshot 📸")
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Send screenshot 📸")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -66,16 +71,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logging.error(e)
-        await update.message.reply_text("Error processing image")
+        await update.message.reply_text("Error")
 
 # ================= MAIN =================
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # FIX: add handlers for EVERYTHING
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    print("AI Screenshot Bot Running...")
+    print("Bot running...")
 
     app.run_polling()
 
