@@ -1,235 +1,65 @@
-# ================= FIXED VERSION =================
+import cv2
+import numpy as np
+from telegram import Update
+from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
 import os
-import asyncio
-import traceback
-from datetime import datetime
 
-from pocketoptionapi_async import AsyncPocketOptionClient
-from telegram import Update, Bot, ReplyKeyboardMarkup
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-SSID = os.getenv("SSID")
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-TIMEFRAME = 60
-EXPIRY = 60
+def analyze_chart(image_path):
+    img = cv2.imread(image_path)
 
-ACCOUNT_MODE = "DEMO"
-BOT_RUNNING = False
-AUTO_TRADE = False
+    if img is None:
+        return "BUY"
 
-current_amount = 10
-TARGET_PROFIT = 100
-cycle_profit = 0
+    h, w, _ = img.shape
 
-AUTHORIZED_CHAT_ID = None
+    crop = img[int(h*0.2):int(h*0.8), int(w*0.2):int(w*0.8)]
 
-client = None
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
 
-# ===== KEYBOARD =====
-keyboard = [
-    ["🤖 AUTO", "📢 MANUAL"],
-    ["🎮 DEMO", "💵 REAL"],
-    ["💰 BALANCE", "📊 STATUS"],
-    ["💵 AMOUNT"],
-    ["▶ START", "⛔ STOP"],
-    ["🔄 RECONNECT"]
-]
+    green_lower = np.array([35, 50, 50])
+    green_upper = np.array([85, 255, 255])
+    green_mask = cv2.inRange(hsv, green_lower, green_upper)
 
-reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    red_lower1 = np.array([0, 70, 50])
+    red_upper1 = np.array([10, 255, 255])
+    red_lower2 = np.array([170, 70, 50])
+    red_upper2 = np.array([180, 255, 255])
 
-bot = Bot(token=TELEGRAM_TOKEN)
+    red_mask1 = cv2.inRange(hsv, red_lower1, red_upper1)
+    red_mask2 = cv2.inRange(hsv, red_lower2, red_upper2)
+    red_mask = red_mask1 + red_mask2
 
-# ===== CREATE CLIENT =====
-def create_client():
-    return AsyncPocketOptionClient(
-        ssid=SSID,
-        is_demo=(ACCOUNT_MODE == "DEMO")
-    )
+    green_pixels = cv2.countNonZero(green_mask)
+    red_pixels = cv2.countNonZero(red_mask)
 
-# ===== SEND =====
-async def send(msg):
-    if AUTHORIZED_CHAT_ID:
-        try:
-            await bot.send_message(AUTHORIZED_CHAT_ID, msg, reply_markup=reply_markup)
-        except:
-            pass
-
-# ===== STRATEGY =====
-def signal(candles):
-    if len(candles) < 2:
-        return "WAIT"
-
-    if candles[-1]["close"] > candles[-2]["close"]:
+    if green_pixels > red_pixels:
         return "BUY"
     else:
         return "SELL"
 
-# ===== CONNECT =====
-async def connect():
-    global client
-    try:
-        client = create_client()
-        await client.connect()
-        await send("✅ Connected to PocketOption")
-        return True
-    except Exception as e:
-        await send(f"❌ Connection failed\n{str(e)}")
-        return False
-
-# ===== BALANCE =====
-async def get_balance():
-    try:
-        if client is None:
-            await send("❌ Not connected")
-            return
-
-        bal = await client.get_balance()
-        await send(f"💰 Balance: ${bal}")
-    except Exception as e:
-        await send(f"❌ Balance error\n{str(e)}")
-
-# ===== TRADE =====
-async def trade(pair):
-    global current_amount, cycle_profit
-
-    try:
-        candles = await client.get_candles(pair, TIMEFRAME, 0)
-        sig = signal(candles)
-
-        await send(f"📊 {pair} → {sig} | ${current_amount}")
-
-        t = await client.buy(
-            asset=pair,
-            amount=current_amount,
-            action=sig.lower(),
-            duration=EXPIRY
-        )
-
-        await asyncio.sleep(EXPIRY + 3)
-
-        result = await client.check_win(t)
-
-        if result > 0:
-            cycle_profit += result
-            await send(f"✅ WIN ${result}")
-
-            current_amount = 10
-
-        else:
-            cycle_profit -= current_amount
-            await send(f"❌ LOSS ${current_amount}")
-
-            # MARTINGALE (recover loss + profit)
-            current_amount = abs(cycle_profit) + 10
-
-    except Exception as e:
-        await send(f"❌ Trade error\n{str(e)}")
-
-# ===== LOOP =====
-async def loop():
-    global BOT_RUNNING
-
-    while True:
-        if not BOT_RUNNING:
-            await asyncio.sleep(2)
-            continue
-
-        if client is None:
-            ok = await connect()
-            if not ok:
-                await asyncio.sleep(5)
-                continue
-
-        await trade("EURUSD_otc")
-        await asyncio.sleep(5)
-
-# ===== HANDLER =====
-setting_amount = False
-manual_mode = False
-
-async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global BOT_RUNNING, AUTO_TRADE, ACCOUNT_MODE
-    global AUTHORIZED_CHAT_ID, current_amount
-    global setting_amount, manual_mode
-
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return
 
-    AUTHORIZED_CHAT_ID = update.effective_chat.id
-    text = update.message.text
+    photo = update.message.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
 
-    # ===== AMOUNT INPUT =====
-    if setting_amount:
-        try:
-            current_amount = float(text)
-            await update.message.reply_text(f"✅ Amount set: ${current_amount}")
-        except:
-            await update.message.reply_text("❌ Invalid amount")
+    file_path = "chart.jpg"
+    await file.download_to_drive(file_path)
 
-        setting_amount = False
-        return
+    result = analyze_chart(file_path)
 
-    # ===== MANUAL INPUT =====
-    if manual_mode:
-        try:
-            pair = text.strip()
-            await trade(pair)
-        except:
-            await update.message.reply_text("❌ Send only pair (e.g. EURUSD_otc)")
-        return
-
-    # ===== BUTTONS =====
-    if text == "💵 AMOUNT":
-        setting_amount = True
-        await update.message.reply_text("Enter amount:")
-        return
-
-    elif text == "🤖 AUTO":
-        AUTO_TRADE = True
-        manual_mode = False
-        await update.message.reply_text("Auto mode ON")
-
-    elif text == "📢 MANUAL":
-        manual_mode = True
-        AUTO_TRADE = False
-        await update.message.reply_text("Send pair only (e.g. EURUSD_otc)")
-
-    elif text == "🎮 DEMO":
-        ACCOUNT_MODE = "DEMO"
-        await connect()
-
-    elif text == "💵 REAL":
-        ACCOUNT_MODE = "REAL"
-        await connect()
-
-    elif text == "▶ START":
-        BOT_RUNNING = True
-        await update.message.reply_text("Bot started")
-
-    elif text == "⛔ STOP":
-        BOT_RUNNING = False
-        await update.message.reply_text("Bot stopped")
-
-    elif text == "💰 BALANCE":
-        await get_balance()
-
-    elif text == "🔄 RECONNECT":
-        ok = await connect()
-        if ok:
-            await update.message.reply_text("Reconnected")
-        else:
-            await update.message.reply_text("Reconnect failed")
-
-# ===== MAIN =====
-async def start_bg(app):
-    asyncio.create_task(loop())
+    await update.message.reply_text(result)
 
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).post_init(start_bg).build()
-    app.add_handler(MessageHandler(filters.TEXT, handler))
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+
+    print("Bot running...")
     app.run_polling()
 
 if __name__ == "__main__":
