@@ -71,12 +71,19 @@ def create_client():
 
 # ================= UTIL =================
 
+async def ensure_client():
+    global client
+    if client is None:
+        client = create_client()
+        await client.connect()
+        await send("✅ Connected to Pocket Option")
+
 async def send(msg):
     if AUTHORIZED_CHAT_ID:
         try:
             await bot.send_message(AUTHORIZED_CHAT_ID, msg, reply_markup=reply_markup)
         except Exception as e:
-            print("Send error:", e)
+            print(f"Send error: {e}")
 
 async def wait_new_candle():
     while datetime.now().second != 0:
@@ -85,7 +92,7 @@ async def wait_new_candle():
 # ================= SIMPLE STRATEGY =================
 
 def simple_signal(candles):
-    if not candles or len(candles) < 5:
+    if not candles or len(candles) < 3:
         return "WAIT"
 
     closes = [float(c["close"]) for c in candles]
@@ -104,6 +111,8 @@ async def execute_trade(pair, signal):
     global cycle_profit, martingale_active
 
     try:
+        await ensure_client()
+
         await send(f"📊 {pair} → {signal} | ${current_amount}")
 
         trade = await client.buy(
@@ -113,7 +122,7 @@ async def execute_trade(pair, signal):
             duration=EXPIRY
         )
 
-        await asyncio.sleep(EXPIRY + 3)
+        await asyncio.sleep(EXPIRY + 2)
 
         result = await client.check_win(trade)
 
@@ -125,12 +134,12 @@ async def execute_trade(pair, signal):
 
             await send(f"✅ WIN ${result}\n💰 Profit: ${cycle_profit}")
 
-            # reset martingale
+            # RESET MARTINGALE
             current_amount = INITIAL_AMOUNT
             martingale_active = False
 
             if cycle_profit >= TARGET_PROFIT:
-                await send("🎯 TARGET HIT. STOPPED.")
+                await send("🎯 TARGET HIT. BOT STOPPED.")
                 return
 
         else:
@@ -139,17 +148,18 @@ async def execute_trade(pair, signal):
 
             await send(f"❌ LOSS -${current_amount}")
 
-            # martingale (recover loss + profit)
+            # MARTINGALE (recover loss + profit)
             current_amount = current_amount * 2
             martingale_active = True
 
-    except Exception:
+    except Exception as e:
         traceback.print_exc()
+        await send(f"❌ Trade error: {e}")
 
 # ================= LOOP =================
 
 async def trading_loop():
-    global client, last_signal, last_pair
+    global last_signal, last_pair
 
     while True:
         try:
@@ -157,14 +167,10 @@ async def trading_loop():
                 await asyncio.sleep(2)
                 continue
 
-            if client is None:
-                client = create_client()
-                await client.connect()
-                await send("✅ Connected")
-
+            await ensure_client()
             await wait_new_candle()
 
-            # martingale continues same pair
+            # MARTINGALE CONTINUES IMMEDIATELY
             if martingale_active and last_pair and last_signal:
                 await execute_trade(last_pair, last_signal)
                 continue
@@ -196,73 +202,80 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     AUTHORIZED_CHAT_ID = update.effective_chat.id
-    text = update.message.text
+    text = update.message.text.strip()
 
-    if text == "🤖 AUTO":
-        AUTO_TRADE = True
-        manual_mode = False
+    try:
+        if text == "🤖 AUTO":
+            AUTO_TRADE = True
+            manual_mode = False
 
-    elif text == "📢 MANUAL":
-        AUTO_TRADE = False
-        manual_mode = True
-        await update.message.reply_text("Send: PAIR AMOUNT\nExample:\nEURUSD_otc 50")
-        return
+        elif text == "📢 MANUAL":
+            AUTO_TRADE = False
+            manual_mode = True
+            await update.message.reply_text("Send: PAIR AMOUNT\nExample:\nEURUSD_otc 50")
+            return
 
-    elif text == "🎮 DEMO":
-        ACCOUNT_MODE = "DEMO"
-        client = None
+        elif text == "🎮 DEMO":
+            ACCOUNT_MODE = "DEMO"
+            client = None
 
-    elif text == "💵 REAL":
-        ACCOUNT_MODE = "REAL"
-        client = None
+        elif text == "💵 REAL":
+            ACCOUNT_MODE = "REAL"
+            client = None
 
-    elif text == "▶ START":
-        BOT_RUNNING = True
+        elif text == "▶ START":
+            BOT_RUNNING = True
 
-    elif text == "⛔ STOP":
-        BOT_RUNNING = False
+        elif text == "⛔ STOP":
+            BOT_RUNNING = False
 
-    elif text == "💰 BALANCE":
-        try:
-            bal = await client.get_balance()
-            await update.message.reply_text(f"💰 Balance: ${bal}")
-        except:
-            await update.message.reply_text("❌ Balance error")
-        return
+        elif text == "💰 BALANCE":
+            try:
+                await ensure_client()
+                bal = await client.get_balance()
+                await update.message.reply_text(f"💰 Balance: ${bal}")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Balance error: {e}")
+            return
 
-    elif text == "📊 STATUS":
-        await update.message.reply_text(
-            f"Trades: {total_trades}\nWins: {wins}\nLosses: {losses}\nProfit: ${cycle_profit}"
-        )
-        return
+        elif text == "📊 STATUS":
+            await update.message.reply_text(
+                f"Trades: {total_trades}\nWins: {wins}\nLosses: {losses}\nProfit: ${cycle_profit}"
+            )
+            return
 
-    elif text == "🔄 RECONNECT":
-        client = None
-        await update.message.reply_text("Reconnecting...")
-        return
+        elif text == "🔄 RECONNECT":
+            client = None
+            await update.message.reply_text("♻ Reconnecting...")
+            return
 
-    # manual trade input
-    elif manual_mode:
-        try:
-            pair, amt = text.split()
-            amt = float(amt)
+        # MANUAL TRADE
+        elif manual_mode:
+            try:
+                pair, amt = text.split()
+                amt = float(amt)
 
-            current_amount = amt
+                current_amount = amt
 
-            candles = await client.get_candles(pair, TIMEFRAME, 0)
-            signal = simple_signal(candles)
+                await ensure_client()
+                candles = await client.get_candles(pair, TIMEFRAME, 0)
+                signal = simple_signal(candles)
 
-            if signal != "WAIT":
-                await execute_trade(pair, signal)
-            else:
-                await update.message.reply_text("No signal")
+                if signal != "WAIT":
+                    await execute_trade(pair, signal)
+                else:
+                    await update.message.reply_text("No signal")
 
-        except:
-            await update.message.reply_text("Format: EURUSD_otc 50")
+            except:
+                await update.message.reply_text("Format: EURUSD_otc 50")
 
-        return
+            return
 
-    await update.message.reply_text("✅ Updated", reply_markup=reply_markup)
+        await update.message.reply_text("✅ Updated", reply_markup=reply_markup)
+
+    except Exception as e:
+        traceback.print_exc()
+        await update.message.reply_text(f"❌ Error: {e}")
 
 # ================= MAIN =================
 
