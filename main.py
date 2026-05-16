@@ -1,120 +1,144 @@
-import cv2
-import numpy as np
-from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
 import os
+import numpy as np
+import cv2
+from telegram import Update
+from telegram.ext import Application, MessageHandler, ContextTypes, filters
+
+# ================= CONFIG =================
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-def analyze_chart(path):
-    img = cv2.imread(path)
+if not TOKEN:
+    raise ValueError("TELEGRAM_TOKEN missing")
+
+# ================= IMAGE ANALYSIS =================
+
+def calculate_rsi(prices, period=14):
+    prices = np.array(prices)
+    delta = np.diff(prices)
+
+    gain = np.maximum(delta, 0)
+    loss = -np.minimum(delta, 0)
+
+    avg_gain = np.mean(gain[-period:])
+    avg_loss = np.mean(loss[-period:])
+
+    if avg_loss == 0:
+        return 100
+
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+def analyze_chart(image_path):
+    img = cv2.imread(image_path)
 
     if img is None:
-        return "BUY"
+        return None
 
-    h, w, _ = img.shape
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    # ===== MAIN CHART AREA =====
-    chart = img[int(h*0.2):int(h*0.75), int(w*0.4):int(w*0.95)]
-
-    hsv = cv2.cvtColor(chart, cv2.COLOR_BGR2HSV)
-
-    # Candle colors
-    green_mask = cv2.inRange(hsv, (35,50,50), (85,255,255))
-    red_mask1 = cv2.inRange(hsv, (0,70,50), (10,255,255))
-    red_mask2 = cv2.inRange(hsv, (170,70,50), (180,255,255))
-    red_mask = red_mask1 + red_mask2
-
-    # ===== SPLIT LAST 4 CANDLES =====
-    sections = np.array_split(range(chart.shape[1]), 4)
-
-    bulls = 0
-    bears = 0
-
-    for sec in sections:
-        g = np.sum(green_mask[:, sec] > 0)
-        r = np.sum(red_mask[:, sec] > 0)
-
-        if g > r:
-            bulls += 1
-        else:
-            bears += 1
-
-    candle_signal = "BUY" if bulls >= 3 else "SELL"
-
-    # ===== EMA (trend direction via line slope) =====
-    gray = cv2.cvtColor(chart, cv2.COLOR_BGR2GRAY)
+    # detect edges (rough candle detection)
     edges = cv2.Canny(gray, 50, 150)
 
-    lines = cv2.HoughLinesP(edges, 1, np.pi/180, 50, minLineLength=50, maxLineGap=10)
+    # simulate candle extraction from brightness (simple approach)
+    height, width = gray.shape
 
-    ema_signal = "BUY"
-    if lines is not None:
-        slopes = []
-        for line in lines[:10]:
-            x1,y1,x2,y2 = line[0]
-            if x2 != x1:
-                slope = (y2 - y1) / (x2 - x1)
-                slopes.append(slope)
+    # divide into 5 vertical zones (5 candles)
+    step = width // 5
+    closes = []
 
-        if slopes:
-            avg = np.mean(slopes)
-            ema_signal = "BUY" if avg < 0 else "SELL"
+    for i in range(5):
+        region = gray[:, i * step:(i + 1) * step]
+        closes.append(np.mean(region))
 
-    # ===== RSI AREA (bottom strip) =====
-    rsi_area = img[int(h*0.75):int(h*0.9), int(w*0.4):int(w*0.95)]
+    closes = np.array(closes)
 
-    avg_color = np.mean(rsi_area)
+    # ================= INDICATORS =================
 
-    if avg_color > 140:
-        rsi_signal = "SELL"   # overbought
-    elif avg_color < 90:
-        rsi_signal = "BUY"    # oversold
+    # EMA 50 (approx using simple average due to limited data)
+    ema = np.mean(closes)
+
+    # RSI
+    rsi = calculate_rsi(closes)
+
+    # Bollinger Bands
+    mean = np.mean(closes)
+    std = np.std(closes)
+    upper = mean + 2 * std
+    lower = mean - 2 * std
+
+    last = closes[-1]
+
+    # ================= LOGIC =================
+
+    buyers = 0
+    sellers = 0
+
+    # last 4 candles trend
+    for i in range(1, 5):
+        if closes[i] > closes[i - 1]:
+            buyers += 1
+        else:
+            sellers += 1
+
+    # RSI logic
+    if rsi > 50:
+        buyers += 1
     else:
-        rsi_signal = "BUY"
+        sellers += 1
 
-    # ===== BOLLINGER (price position) =====
-    top_band = np.mean(chart[0:int(chart.shape[0]*0.2)])
-    bottom_band = np.mean(chart[int(chart.shape[0]*0.8):])
-
-    if top_band > bottom_band:
-        boll_signal = "SELL"
+    # EMA logic
+    if last > ema:
+        buyers += 1
     else:
-        boll_signal = "BUY"
+        sellers += 1
 
-    # ===== FINAL DECISION =====
-    signals = [candle_signal, ema_signal, rsi_signal, boll_signal]
+    # Bollinger logic
+    if last < lower:
+        buyers += 1
+    elif last > upper:
+        sellers += 1
 
-    buy_count = signals.count("BUY")
-    sell_count = signals.count("SELL")
+    # ================= FINAL SIGNAL =================
 
-    if buy_count >= 3:
+    if buyers > sellers:
         return "BUY"
     else:
         return "SELL"
 
-# ===== TELEGRAM =====
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+# ================= TELEGRAM HANDLER =================
+
+async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return
 
     photo = update.message.photo[-1]
-    file = await context.bot.get_file(photo.file_id)
+    file = await photo.get_file()
 
     path = "chart.jpg"
     await file.download_to_drive(path)
 
     result = analyze_chart(path)
 
-    await update.message.reply_text(result)
+    if result:
+        await update.message.reply_text(result)
+    else:
+        await update.message.reply_text("Error")
+
+
+# ================= MAIN =================
 
 def main():
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(MessageHandler(filters.PHOTO, handle))
 
-    print("Bot running...")
+    app.add_handler(MessageHandler(filters.PHOTO, handle_image))
+
+    print("AI Bot Running...")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
