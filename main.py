@@ -6,54 +6,69 @@ from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, fil
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# --------- ANALYSIS ----------
+# --------- IMPROVED ANALYSIS ----------
 def analyze_chart(path):
     img = cv2.imread(path)
 
-    # Safety: if image fails
     if img is None:
         return "SELL"
 
     try:
-        # Resize for speed and consistency
+        # Resize for consistency
         img = cv2.resize(img, (400, 250))
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
         h, w = gray.shape
 
-        prices = []
+        candles = []
 
-        # Extract approximate price path
-        for x in range(0, w, 10):
-            column = gray[:, x]
+        # Split chart into segments (each ~1 candle)
+        segments = 12
+        step = w // segments
 
-            if column.size == 0:
+        for i in range(segments):
+            region = gray[:, i*step:(i+1)*step]
+
+            if region.size == 0:
                 continue
 
-            # Find brightest point (approx price)
-            y = int(np.argmax(column))
-            prices.append(y)
+            # Top and bottom of "price"
+            top = np.argmax(np.mean(region, axis=1))
+            bottom = np.argmin(np.mean(region, axis=1))
 
-        # Need at least 5 points → 4 movements
-        if len(prices) < 5:
+            candles.append((top, bottom))
+
+        if len(candles) < 6:
             return "SELL"
 
-        last = prices[-5:]
+        # Focus on last 5 candles → analyze 4
+        last = candles[-5:]
 
-        buyers_force = 0
-        sellers_force = 0
+        buyers = 0
+        sellers = 0
 
-        # Compare movements (this is your "control")
         for i in range(1, len(last)):
-            move = last[i-1] - last[i]
+            prev_top, prev_bot = last[i-1]
+            curr_top, curr_bot = last[i]
 
-            if move > 0:
-                buyers_force += move
+            # Movement direction
+            if curr_top < prev_top:
+                buyers += 1
             else:
-                sellers_force += abs(move)
+                sellers += 1
 
-        # Final decision
-        if buyers_force > sellers_force:
+            # Strength (body size)
+            prev_body = abs(prev_top - prev_bot)
+            curr_body = abs(curr_top - curr_bot)
+
+            if curr_body > prev_body:
+                if curr_top < prev_top:
+                    buyers += 1
+                else:
+                    sellers += 1
+
+        # Final control decision
+        if buyers > sellers:
             return "BUY"
         else:
             return "SELL"
