@@ -11,50 +11,58 @@ from telegram.ext import (
     filters
 )
 
-from PIL import Image
-import numpy as np
+# SAFE IMPORT (prevents crash)
+try:
+    from PIL import Image
+    import numpy as np
+    AI_READY = True
+except:
+    AI_READY = False
 
 # ================= CONFIG =================
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-if not TELEGRAM_TOKEN:
+if not TOKEN:
     raise ValueError("TELEGRAM_TOKEN missing")
-
-# ================= LOGGING =================
 
 logging.basicConfig(level=logging.INFO)
 
-# ================= AI LOGIC =================
+# ================= AI =================
 
-def analyze_chart(image: Image.Image) -> str:
-    img = image.convert("L")
-    arr = np.array(img)
+def analyze_chart(image):
+    try:
+        img = image.convert("L")
+        arr = np.array(img)
 
-    h, w = arr.shape
-    section = w // 5
+        h, w = arr.shape
+        section = w // 5
 
-    values = []
-    for i in range(5):
-        part = arr[:, i * section:(i + 1) * section]
-        values.append(np.mean(part))
+        values = []
+        for i in range(5):
+            part = arr[:, i * section:(i + 1) * section]
+            values.append(np.mean(part))
 
-    trend = values[3] - values[0]
+        trend = values[3] - values[0]
 
-    if trend > 0:
-        return "BUY"
-    else:
-        return "SELL"
+        return "BUY" if trend > 0 else "SELL"
+
+    except:
+        return "ERROR"
 
 # ================= HANDLERS =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Send chart screenshot 📸")
+    await update.message.reply_text("Send screenshot 📸")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Send screenshot 📸")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not AI_READY:
+        await update.message.reply_text("Bot not ready (missing packages)")
+        return
+
     try:
         photo = update.message.photo[-1]
         file = await photo.get_file()
@@ -71,14 +79,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logging.error(e)
-        await update.message.reply_text("Error")
+        await update.message.reply_text("Error processing image")
 
 # ================= MAIN =================
 
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TOKEN).build()
 
-    # FIX: add handlers for EVERYTHING
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
