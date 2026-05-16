@@ -65,4 +65,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        msg = await update.message.reply
+        msg = await update.message.reply_text("Analyzing...")
+
+        photo = update.message.photo[-1]
+        file = await photo.get_file()
+
+        path = "chart.jpg"
+        await file.download_to_drive(path)
+
+        result = analyze_chart(path)
+
+        await msg.edit_text(result)
+
+    except:
+        await update.message.reply_text("Error")
+
+
+# --------- MAIN ----------
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+
+    print("Bot running...")
+    app.run_polling()
