@@ -13,12 +13,6 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 SSID = os.getenv("SSID")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-if not TELEGRAM_TOKEN:
-    raise ValueError("TELEGRAM_TOKEN missing")
-
-if not SSID:
-    raise ValueError("SSID missing")
-
 TIMEFRAME = 60
 EXPIRY = 60
 
@@ -27,13 +21,12 @@ ACCOUNT_MODE = "DEMO"
 AUTO_TRADE = False
 BOT_RUNNING = False
 
-# AUTO amount + martingale
 BASE_AMOUNT = 10
 current_amount = BASE_AMOUNT
 
 AUTHORIZED_CHAT_ID = None
 
-# martingale tracking
+# martingale
 martingale_active = False
 last_signal = None
 last_pair = None
@@ -42,9 +35,6 @@ last_pair = None
 wins = 0
 losses = 0
 total_trades = 0
-cycle_profit = 0
-
-# ================= TELEGRAM =================
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
@@ -52,8 +42,7 @@ keyboard = [
     ["🤖 AUTO", "📢 MANUAL"],
     ["🎮 DEMO", "💵 REAL"],
     ["💰 BALANCE", "📊 STATUS"],
-    ["▶ START", "⛔ STOP"],
-    ["🔄 RECONNECT"]
+    ["▶ START", "⛔ STOP"]
 ]
 
 reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -70,10 +59,7 @@ def create_client():
 
 async def send(msg):
     if AUTHORIZED_CHAT_ID:
-        try:
-            await bot.send_message(AUTHORIZED_CHAT_ID, msg, reply_markup=reply_markup)
-        except Exception as e:
-            print(e)
+        await bot.send_message(AUTHORIZED_CHAT_ID, msg)
 
 async def wait_new_candle():
     while datetime.now().second != 0:
@@ -97,14 +83,14 @@ def simple_signal(candles):
 # ================= TRADE =================
 
 async def execute_trade(pair, signal, amount):
-    global wins, losses, total_trades, cycle_profit
     global current_amount, martingale_active
+    global wins, losses, total_trades
 
     try:
         client = create_client()
         await client.connect()
 
-        await send(f"{pair} {signal} ${amount}")
+        await send(f"{pair} → {signal} | ${amount}")
 
         trade = await client.buy(
             asset=pair,
@@ -122,30 +108,26 @@ async def execute_trade(pair, signal, amount):
 
         if result > 0:
             wins += 1
-            cycle_profit += result
             await send(f"WIN ${result}")
 
-            # reset martingale
             current_amount = BASE_AMOUNT
             martingale_active = False
 
         else:
             losses += 1
-            cycle_profit -= amount
             await send(f"LOSS -${amount}")
 
-            # martingale
             current_amount = amount * 2
             martingale_active = True
 
-    except Exception:
+    except:
         traceback.print_exc()
         await send("Trade error")
 
 # ================= LOOP =================
 
 async def trading_loop():
-    global last_pair, last_signal, current_amount
+    global last_pair, last_signal
 
     while True:
         try:
@@ -155,8 +137,8 @@ async def trading_loop():
 
             await wait_new_candle()
 
-            # continue martingale immediately
-            if martingale_active and last_pair and last_signal:
+            # martingale
+            if martingale_active and last_pair:
                 await execute_trade(last_pair, last_signal, current_amount)
                 continue
 
@@ -169,6 +151,7 @@ async def trading_loop():
 
             pair = "EURUSD_otc"
             candles = await client.get_candles(pair, TIMEFRAME, 0)
+
             signal = simple_signal(candles)
 
             if signal != "WAIT":
@@ -188,8 +171,7 @@ manual_mode = False
 
 async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global AUTO_TRADE, BOT_RUNNING, AUTHORIZED_CHAT_ID
-    global ACCOUNT_MODE, manual_mode
-    global BASE_AMOUNT, current_amount
+    global BASE_AMOUNT, current_amount, manual_mode
 
     if update.effective_user.id != OWNER_ID:
         return
@@ -197,7 +179,7 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     AUTHORIZED_CHAT_ID = update.effective_chat.id
     text = update.message.text.strip()
 
-    # set auto amount
+    # SET AMOUNT
     if text.startswith("AMOUNT"):
         try:
             amt = float(text.split()[1])
@@ -211,24 +193,21 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "🤖 AUTO":
         AUTO_TRADE = True
         manual_mode = False
+        await update.message.reply_text("Auto mode ON")
 
     elif text == "📢 MANUAL":
         AUTO_TRADE = False
         manual_mode = True
-        await update.message.reply_text("Format:\nEURUSD_otc 50 BUY")
+        await update.message.reply_text("Send: EURUSD_otc 50")
         return
-
-    elif text == "🎮 DEMO":
-        ACCOUNT_MODE = "DEMO"
-
-    elif text == "💵 REAL":
-        ACCOUNT_MODE = "REAL"
 
     elif text == "▶ START":
         BOT_RUNNING = True
+        await update.message.reply_text("Bot started")
 
     elif text == "⛔ STOP":
         BOT_RUNNING = False
+        await update.message.reply_text("Bot stopped")
 
     elif text == "💰 BALANCE":
         try:
@@ -241,35 +220,28 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Balance error")
         return
 
-    elif text == "📊 STATUS":
-        await update.message.reply_text(
-            f"Trades: {total_trades}\nWins: {wins}\nLosses: {losses}\nProfit: ${cycle_profit}"
-        )
-        return
-
-    elif text == "🔄 RECONNECT":
-        await update.message.reply_text("Reconnect requested")
-        return
-
-    # manual trade: PAIR AMOUNT BUY/SELL
+    # MANUAL SIGNAL ONLY
     elif manual_mode:
         try:
-            pair, amt, direction = text.split()
+            pair, amt = text.split()
             amt = float(amt)
-            direction = direction.upper()
 
-            if direction not in ["BUY", "SELL"]:
-                await update.message.reply_text("Use BUY or SELL")
-                return
+            client = create_client()
+            await client.connect()
 
-            await execute_trade(pair, direction, amt)
+            candles = await client.get_candles(pair, TIMEFRAME, 0)
+            signal = simple_signal(candles)
+
+            await client.disconnect()
+
+            await update.message.reply_text(
+                f"{pair} → {signal}\nAmount: ${amt}"
+            )
 
         except:
-            await update.message.reply_text("Format:\nEURUSD_otc 50 BUY")
+            await update.message.reply_text("Format: EURUSD_otc 50")
 
         return
-
-    await update.message.reply_text("OK", reply_markup=reply_markup)
 
 # ================= MAIN =================
 
